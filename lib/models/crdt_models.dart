@@ -4,10 +4,7 @@ class LwwRecord<T> {
 
   LwwRecord({required this.value, required this.timestamp});
 
-  Map<String, dynamic> toJson() => {
-        'value': value,
-        'timestamp': timestamp,
-      };
+  Map<String, dynamic> toJson() => {'value': value, 'timestamp': timestamp};
 
   factory LwwRecord.fromJson(Map<String, dynamic> json) {
     return LwwRecord<T>(
@@ -48,19 +45,23 @@ class CrdtShoppingItem {
       // wins the one which was changed later
       name: name.timestamp > other.name.timestamp ? name : other.name,
       // wins the one which was changed later
-      isBought: isBought.timestamp > other.isBought.timestamp ? isBought : other.isBought,
+      isBought: isBought.timestamp > other.isBought.timestamp
+          ? isBought
+          : other.isBought,
       // wins the one which was changed later
-      isDeleted: isDeleted.timestamp > other.isDeleted.timestamp ? isDeleted : other.isDeleted,
+      isDeleted: isDeleted.timestamp > other.isDeleted.timestamp
+          ? isDeleted
+          : other.isDeleted,
     );
   }
 
   // saving to gdrive
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name.toJson(),
-        'isBought': isBought.toJson(),
-        'isDeleted': isDeleted.toJson(),
-      };
+    'id': id,
+    'name': name.toJson(),
+    'isBought': isBought.toJson(),
+    'isDeleted': isDeleted.toJson(),
+  };
 
   factory CrdtShoppingItem.fromJson(Map<String, dynamic> json) {
     return CrdtShoppingItem(
@@ -109,11 +110,11 @@ class CrdtShoppingList {
   factory CrdtShoppingList.fromJson(Map<String, dynamic> json) {
     final list = CrdtShoppingList();
     final itemsJson = json['items'] as Map<String, dynamic>? ?? {};
-    
+
     itemsJson.forEach((key, value) {
       list.items[key] = CrdtShoppingItem.fromJson(value);
     });
-    
+
     return list;
   }
 }

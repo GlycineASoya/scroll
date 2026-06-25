@@ -1,11 +1,96 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:home_widget/home_widget.dart';
 
 import 'models/crdt_models.dart';
 import 'services/google_drive_service.dart';
 
+// --- BACKGROUND CLICK HANDLER FOR THE WIDGET ---
+Future<void> updateWidgetData(CrdtShoppingList list) async {
+  List<Map<String, dynamic>> widgetItems = [];
+
+  // 1. First, add only NOT PURCHASED items
+  final activeItems = list.visibleItems.where((item) => !item.isBought.value);
+  for (var item in activeItems) {
+    widgetItems.add({
+      'id': item.id,
+      'name': item.name.value,
+      'isBought': false,
+    });
+  }
+
+  // 2. Then add PURCHASED items (they will always be at the bottom)
+  final boughtItems = list.visibleItems.where((item) => item.isBought.value);
+  for (var item in boughtItems) {
+    widgetItems.add({'id': item.id, 'name': item.name.value, 'isBought': true});
+  }
+
+  if (widgetItems.isEmpty) {
+    widgetItems.add({
+      'id': 'empty',
+      'name': 'The list is empty',
+      'isBought': false,
+    });
+  }
+
+  final jsonString = jsonEncode(widgetItems);
+  await HomeWidget.saveWidgetData<String>('list_data_json', jsonString);
+  await HomeWidget.updateWidget(
+    name: 'ShoppingListWidget',
+    androidName: 'ShoppingListWidget',
+  );
+}
+
+@pragma('vm:entry-point')
+Future<void> interactiveCallback(Uri? uri) async {
+  // Log to the console to verify that the isolate has started
+  debugPrint('✅ STATUS CHANGED AND WIDGET UPDATED');
+
+  if (uri?.host == 'toggle') {
+    final id = uri?.queryParameters['id'];
+    if (id != null) {
+      final prefs = await SharedPreferences.getInstance();
+
+      // CRITICALLY IMPORTANT: force the background process to reload the physical preferences file,
+      // otherwise it will use stale cached data from its own isolate!
+      await prefs.reload();
+
+      String? jsonString = prefs.getString('crdt_shopping_list');
+
+      if (jsonString != null) {
+        final list = CrdtShoppingList.fromJson(jsonDecode(jsonString));
+
+        try {
+          final item = list.visibleItems.firstWhere((e) => e.id == id);
+          final now = DateTime.now().millisecondsSinceEpoch;
+
+          // Toggle the status (bought/not bought)
+          item.isBought = LwwRecord(
+            value: !item.isBought.value,
+            timestamp: now,
+          );
+
+          // Save the updated list
+          await prefs.setString(
+            'crdt_shopping_list',
+            jsonEncode(list.toJson()),
+          );
+
+          // Trigger the widget refresh
+          await updateWidgetData(list);
+          debugPrint('✅ STATUS CHANGED AND WIDGET UPDATED');
+        } catch (e) {
+          debugPrint('❌ Error finding item: $e');
+        }
+      }
+    }
+  }
+}
+
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  HomeWidget.registerBackgroundCallback(interactiveCallback);
   runApp(const MyApp());
 }
 
@@ -32,41 +117,108 @@ class ShoppingScreen extends StatefulWidget {
   State<ShoppingScreen> createState() => _ShoppingScreenState();
 }
 
-class _ShoppingScreenState extends State<ShoppingScreen> {
+class _ShoppingScreenState extends State<ShoppingScreen>
+    with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
   CrdtShoppingList _shoppingList = CrdtShoppingList();
-  
+
   final GoogleDriveService _driveService = GoogleDriveService();
-  
+
   bool _isAuthenticated = false;
-  bool _isSyncing = false; 
+  bool _isSyncing = false;
   bool _isSharing = false;
-  
+
   late final String _fileName;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _fileName = _driveService.generateFileName('ScrollApp', 'Main List');
     _loadLocalData();
   }
 
-  // --- LOCAL DATA CRUD ---
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _textController.dispose();
+    super.dispose();
+  }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // When the app resumes, read checkbox changes and the pending add queue
+      _loadLocalData();
+    }
+  }
+
+  // --- WIDGET UPDATE LOGIC (FOR LISTVIEW) ---
+  Future<void> _updateWidget() async {
+    await updateWidgetData(_shoppingList);
+  }
+
+  // --- PROCESS THE QUICK ADD QUEUE FROM THE WIDGET ---
+  Future<void> _processPendingWidgetAdds() async {
+    final String? pendingJson = await HomeWidget.getWidgetData<String>(
+      'pending_adds',
+    );
+
+    if (pendingJson != null && pendingJson != '[]') {
+      try {
+        final List<dynamic> pendingList = jsonDecode(pendingJson);
+        if (pendingList.isNotEmpty) {
+          setState(() {
+            for (var itemName in pendingList) {
+              // Generate a unique ID for the CRDT
+              final id =
+                  '${DateTime.now().millisecondsSinceEpoch}_${itemName.hashCode}';
+              final newItem = CrdtShoppingItem.create(
+                id,
+                itemName.toString().trim(),
+              );
+              _shoppingList.putItem(newItem);
+            }
+          });
+
+          // Clear the widget queue in SharedPreferences
+          await HomeWidget.saveWidgetData<String>('pending_adds', '[]');
+
+          // Save locally and push to Google Drive
+          await _saveLocalData();
+          await _syncWithDrive();
+        }
+      } catch (e) {
+        debugPrint('Error parsing widget queue: $e');
+      }
+    }
+  }
+
+  // --- LOCAL DATA CRUD ---
   Future<void> _loadLocalData() async {
     final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+
     String? jsonString = prefs.getString('crdt_shopping_list');
     if (jsonString != null) {
       setState(() {
         _shoppingList = CrdtShoppingList.fromJson(jsonDecode(jsonString));
       });
     }
+
+    // First, process the pending queue from the widget, if any
+    await _processPendingWidgetAdds();
+    // First, process the pending queue from the widget, if any
+    await _updateWidget();
   }
 
   Future<void> _saveLocalData() async {
     final prefs = await SharedPreferences.getInstance();
     String jsonString = jsonEncode(_shoppingList.toJson());
     await prefs.setString('crdt_shopping_list', jsonString);
+
+    // Update widget after every list save
+    await _updateWidget();
   }
 
   // --- AUTHZ and SYNC ---
@@ -74,12 +226,12 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
   Future<void> _signIn() async {
     setState(() => _isSyncing = true);
     final success = await _driveService.signIn();
-    
+
     setState(() {
       _isAuthenticated = success;
       _isSyncing = false;
     });
-    
+
     if (success) {
       await _syncWithDrive();
     }
@@ -99,7 +251,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
 
     try {
       final remoteJson = await _driveService.downloadJson(_fileName);
-      
+
       if (remoteJson != null) {
         final remoteList = CrdtShoppingList.fromJson(remoteJson);
         setState(() {
@@ -110,7 +262,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
 
       await _driveService.uploadJson(_fileName, _shoppingList.toJson());
     } catch (e) {
-      debugPrint('Ошибка синхронизации: $e');
+      debugPrint('Sync error: $e');
     } finally {
       setState(() => _isSyncing = false);
     }
@@ -138,25 +290,34 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: TextField(
-                decoration: const InputDecoration(hintText: 'Search (name or email)'),
+                decoration: const InputDecoration(
+                  hintText: 'Search (name or email)',
+                ),
                 onChanged: (val) {
                   setDialogState(() {
-                    filteredContacts = allContacts.where((c) => 
-                      c.name.toLowerCase().contains(val.toLowerCase()) || 
-                      c.email.toLowerCase().contains(val.toLowerCase())
-                    ).toList();
+                    filteredContacts = allContacts
+                        .where(
+                          (c) =>
+                              c.name.toLowerCase().contains(
+                                val.toLowerCase(),
+                              ) ||
+                              c.email.toLowerCase().contains(val.toLowerCase()),
+                        )
+                        .toList();
                   });
                 },
               ),
             ),
-            ...filteredContacts.map((contact) => SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, contact.email),
-              child: ListTile(
-                title: Text(contact.name),
-                subtitle: Text(contact.email),
-                leading: const Icon(Icons.person, color: Colors.teal),
+            ...filteredContacts.map(
+              (contact) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, contact.email),
+                child: ListTile(
+                  title: Text(contact.name),
+                  subtitle: Text(contact.email),
+                  leading: const Icon(Icons.person, color: Colors.teal),
+                ),
               ),
-            )),
+            ),
           ],
         ),
       ),
@@ -168,10 +329,13 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
         SnackBar(content: Text('Sharing access with $selectedEmail...')),
       );
 
-      final success = await _driveService.shareFileWithUser(_fileName, selectedEmail);
+      final success = await _driveService.shareFileWithUser(
+        _fileName,
+        selectedEmail,
+      );
 
       if (!mounted) return;
-      
+
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -191,7 +355,6 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
   }
 
   // --- UI ---
-
   void _addItem() {
     if (_textController.text.isNotEmpty) {
       setState(() {
@@ -201,7 +364,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
       });
       _textController.clear();
       _saveLocalData();
-      _syncWithDrive(); 
+      _syncWithDrive();
     }
   }
 
@@ -211,7 +374,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
       item.isDeleted = LwwRecord(value: true, timestamp: now);
     });
     _saveLocalData();
-    _syncWithDrive(); 
+    _syncWithDrive();
   }
 
   void _toggleItem(CrdtShoppingItem item, bool? value) {
@@ -220,7 +383,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
       item.isBought = LwwRecord(value: value ?? false, timestamp: now);
     });
     _saveLocalData();
-    _syncWithDrive(); 
+    _syncWithDrive();
   }
 
   @override
@@ -238,29 +401,35 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
             IconButton(
               icon: _isSharing
                   ? const SizedBox(
-                      width: 20, 
-                      height: 20, 
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black54)
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black54,
+                      ),
                     )
                   : const Icon(Icons.group_add),
               onPressed: isBusy ? null : _shareList,
               tooltip: 'Share the list',
             ),
-            
+
           // Sync button
           if (_isAuthenticated)
             IconButton(
-              icon: _isSyncing 
+              icon: _isSyncing
                   ? const SizedBox(
-                      width: 20, 
-                      height: 20, 
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black54)
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black54,
+                      ),
                     )
                   : const Icon(Icons.sync),
               onPressed: isBusy ? null : _syncWithDrive,
               tooltip: 'Sync',
             ),
-            
+
           // Login/Logout button
           IconButton(
             icon: Icon(_isAuthenticated ? Icons.logout : Icons.login),
@@ -291,10 +460,10 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
                   child: TextField(
                     controller: _textController,
                     decoration: const InputDecoration(
-                      hintText: 'Next to buy?',
+                      hintText: 'What to buy?',
                       border: OutlineInputBorder(),
                     ),
-                    onSubmitted: (_) => _addItem(), 
+                    onSubmitted: (_) => _addItem(),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -305,7 +474,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
               ],
             ),
           ),
-          
+
           Expanded(
             child: visibleItems.isEmpty
                 ? const Center(child: Text('Empty list'))
@@ -314,7 +483,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
                     itemBuilder: (context, index) {
                       final item = visibleItems[index];
                       return Dismissible(
-                        key: Key(item.id), 
+                        key: Key(item.id),
                         direction: DismissDirection.endToStart,
                         background: Container(
                           color: Colors.red,
@@ -327,8 +496,12 @@ class _ShoppingScreenState extends State<ShoppingScreen> {
                           title: Text(
                             item.name.value,
                             style: TextStyle(
-                              decoration: item.isBought.value ? TextDecoration.lineThrough : null,
-                              color: item.isBought.value ? Colors.grey : Colors.black,
+                              decoration: item.isBought.value
+                                  ? TextDecoration.lineThrough
+                                  : null,
+                              color: item.isBought.value
+                                  ? Colors.grey
+                                  : Colors.black,
                             ),
                           ),
                           value: item.isBought.value,
