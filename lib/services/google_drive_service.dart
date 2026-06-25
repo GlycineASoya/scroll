@@ -29,8 +29,8 @@ class GoogleAuthClient extends http.BaseClient {
 class GoogleDriveService {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: [
-      drive.DriveApi.driveScope, 
-      people.PeopleServiceApi.contactsReadonlyScope
+      drive.DriveApi.driveScope,
+      people.PeopleServiceApi.contactsReadonlyScope,
     ],
   );
 
@@ -46,7 +46,7 @@ class GoogleDriveService {
   Future<bool> signIn() async {
     try {
       _currentUser = await _googleSignIn.signIn();
-      
+
       if (_currentUser == null) {
         debugPrint('User cancelled AUTHZ');
         return false;
@@ -57,7 +57,7 @@ class GoogleDriveService {
 
       _driveApi = drive.DriveApi(authenticateClient);
       _peopleApi = people.PeopleServiceApi(authenticateClient);
-      
+
       return true;
     } catch (e) {
       debugPrint('AUTHZ error: $e');
@@ -95,13 +95,16 @@ class GoogleDriveService {
     return null;
   }
 
-  Future<bool> uploadJson(String targetFileName, Map<String, dynamic> jsonData) async {
+  Future<bool> uploadJson(
+    String targetFileName,
+    Map<String, dynamic> jsonData,
+  ) async {
     if (_driveApi == null) return false;
     try {
       final String jsonString = jsonEncode(jsonData);
       final List<int> bytes = utf8.encode(jsonString);
       final stream = Future.value(bytes).asStream();
-      
+
       final media = drive.Media(stream, bytes.length);
       final fileId = await _getFileId(targetFileName);
 
@@ -125,18 +128,20 @@ class GoogleDriveService {
     if (_driveApi == null) return null;
     try {
       final fileId = await _getFileId(targetFileName);
-      if (fileId == null) return null; 
+      if (fileId == null) return null;
 
-      final response = await _driveApi!.files.get(
-        fileId,
-        downloadOptions: drive.DownloadOptions.fullMedia,
-      ) as drive.Media;
+      final response =
+          await _driveApi!.files.get(
+                fileId,
+                downloadOptions: drive.DownloadOptions.fullMedia,
+              )
+              as drive.Media;
 
       final List<int> dataStore = [];
       await response.stream.forEach((data) {
         dataStore.addAll(data);
       });
-      
+
       final jsonString = utf8.decode(dataStore);
       return jsonDecode(jsonString);
     } catch (e) {
@@ -158,7 +163,8 @@ class GoogleDriveService {
       final List<ContactInfo> contacts = [];
       if (response.connections != null) {
         for (var person in response.connections!) {
-          if (person.emailAddresses != null && person.emailAddresses!.isNotEmpty) {
+          if (person.emailAddresses != null &&
+              person.emailAddresses!.isNotEmpty) {
             final email = person.emailAddresses!.first.value!;
             final name = person.names?.first.displayName ?? email;
             contacts.add(ContactInfo(name, email));
@@ -172,7 +178,10 @@ class GoogleDriveService {
     }
   }
 
-  Future<bool> shareFileWithUser(String targetFileName, String emailAddress) async {
+  Future<bool> shareFileWithUser(
+    String targetFileName,
+    String emailAddress,
+  ) async {
     if (_driveApi == null) return false;
 
     try {
@@ -189,11 +198,11 @@ class GoogleDriveService {
       );
 
       await _driveApi!.permissions.create(
-        permission, 
+        permission,
         fileId,
-        sendNotificationEmail: false, 
+        sendNotificationEmail: false,
       );
-      
+
       debugPrint('File was successfully shared with $emailAddress');
       return true;
     } catch (e) {
