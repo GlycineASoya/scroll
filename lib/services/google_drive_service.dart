@@ -66,6 +66,29 @@ class GoogleDriveService {
     }
   }
 
+  Future<bool> restoreSession() async {
+    try {
+      // Trying to sign in with previous session
+      _currentUser = await _googleSignIn.signInSilently();
+
+      if (_currentUser == null) {
+        return false; // no saved session
+      }
+
+      // if found then initialize the connection
+      final headers = await _currentUser!.authHeaders;
+      final authenticateClient = GoogleAuthClient(headers);
+
+      _driveApi = drive.DriveApi(authenticateClient);
+      _peopleApi = people.PeopleServiceApi(authenticateClient);
+
+      return true;
+    } catch (e) {
+      debugPrint('Failed silent sign-in: $e');
+      return false;
+    }
+  }
+
   Future<void> signOut() async {
     try {
       await _googleSignIn.disconnect();

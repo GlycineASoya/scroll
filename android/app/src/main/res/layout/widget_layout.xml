@@ -17,7 +17,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Нужно купить:"
+            android:text="What to buy:"
             android:textColor="#004D40"
             android:textSize="16sp"
             android:textStyle="bold" />
@@ -28,7 +28,7 @@
             android:layout_height="36dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_queue_add" 
-            android:contentDescription="Добавить элемент" />
+            android:contentDescription="Add item" />
     </LinearLayout>
 
     <ListView
