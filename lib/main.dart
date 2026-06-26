@@ -10,8 +10,13 @@ import 'services/google_drive_service.dart';
 Future<void> updateWidgetData(CrdtShoppingList list) async {
   List<Map<String, dynamic>> widgetItems = [];
 
-  // 1. First, add only NOT PURCHASED items
-  final activeItems = list.visibleItems.where((item) => !item.isBought.value);
+  // 1. First, unpurchased items.
+  // Sort: at the top, the most recently added items (using the creation timestamp of the name).
+  final activeItems = list.visibleItems
+      .where((item) => !item.isBought.value)
+      .toList();
+  activeItems.sort((a, b) => b.name.timestamp.compareTo(a.name.timestamp));
+
   for (var item in activeItems) {
     widgetItems.add({
       'id': item.id,
@@ -20,18 +25,21 @@ Future<void> updateWidgetData(CrdtShoppingList list) async {
     });
   }
 
-  // 2. Then add PURCHASED items (they will always be at the bottom)
-  final boughtItems = list.visibleItems.where((item) => item.isBought.value);
+  // 2. Then PURCHASED items.
+  // Sort: at the top, those whose purchase status was updated most recently (using the timestamp of the purchase status change).
+  final boughtItems = list.visibleItems
+      .where((item) => item.isBought.value)
+      .toList();
+  boughtItems.sort(
+    (a, b) => b.isBought.timestamp.compareTo(a.isBought.timestamp),
+  );
+
   for (var item in boughtItems) {
     widgetItems.add({'id': item.id, 'name': item.name.value, 'isBought': true});
   }
 
   if (widgetItems.isEmpty) {
-    widgetItems.add({
-      'id': 'empty',
-      'name': 'The list is empty',
-      'isBought': false,
-    });
+    widgetItems.add({'id': 'empty', 'name': 'Empty list', 'isBought': false});
   }
 
   final jsonString = jsonEncode(widgetItems);
@@ -407,7 +415,16 @@ class _ShoppingScreenState extends State<ShoppingScreen>
 
   @override
   Widget build(BuildContext context) {
-    final visibleItems = _shoppingList.visibleItems;
+    // sort in the main application
+    final activeItems = _shoppingList.visibleItems.where((item) => !item.isBought.value).toList();
+    activeItems.sort((a, b) => b.name.timestamp.compareTo(a.name.timestamp));
+
+    final boughtItems = _shoppingList.visibleItems.where((item) => item.isBought.value).toList();
+    boughtItems.sort((a, b) => b.isBought.timestamp.compareTo(a.isBought.timestamp));
+
+    // Merging back
+    final sortedVisibleItems = [...activeItems, ...boughtItems];
+
     final isBusy = _isSyncing || _isSharing;
 
     return Scaffold(
@@ -495,12 +512,12 @@ class _ShoppingScreenState extends State<ShoppingScreen>
           ),
 
           Expanded(
-            child: visibleItems.isEmpty
+            child: sortedVisibleItems.isEmpty
                 ? const Center(child: Text('Empty list'))
                 : ListView.builder(
-                    itemCount: visibleItems.length,
+                    itemCount: sortedVisibleItems.length,
                     itemBuilder: (context, index) {
-                      final item = visibleItems[index];
+                      final item = sortedVisibleItems[index];
                       return Dismissible(
                         key: Key(item.id),
                         direction: DismissDirection.endToStart,
