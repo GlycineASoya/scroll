@@ -135,7 +135,26 @@ class _ShoppingScreenState extends State<ShoppingScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fileName = _driveService.generateFileName('ScrollApp', 'Main List');
-    _loadLocalData();
+
+    // Run common initialization
+    _initApp();
+  }
+
+  // loading data on app start
+  Future<void> _initApp() async {
+    // load local data
+    await _loadLocalData();
+
+    // restore the session
+    final restored = await _driveService.restoreSession();
+
+    if (restored && mounted) {
+      setState(() {
+        _isAuthenticated = true;
+      });
+      // if restored - sync with the remote data
+      await _syncWithDrive();
+    }
   }
 
   @override
